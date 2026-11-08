@@ -25,6 +25,7 @@ class ProjectStatus(StrEnum):
     COMPLETED = "completed"
     IN_PROGRESS = "in_progress"
     PLANNED = "planned"
+    UNKNOWN = "unknown"
 
 
 class WorkMode(StrEnum):
@@ -187,10 +188,24 @@ class Education(EvidenceRecord):
     dates: DateRange | None = Field(default=None, description="Reported study period, if known.")
 
 
+class ProjectFeature(EvidenceRecord):
+    """A reported capability; implementation status and verification remain independent."""
+
+    name: NonEmptyText = Field(description="Reported project feature or capability name.")
+    description: NonEmptyText | None = Field(
+        default=None, description="Reported feature scope; distinguish plans from implemented work."
+    )
+    status: ProjectStatus = Field(
+        default=ProjectStatus.UNKNOWN,
+        description="Reported implementation status; unknown when not explicitly stated.",
+    )
+
+
 class Project(EvidenceRecord):
     name: NonEmptyText = Field(description="Reported project name.")
     status: ProjectStatus = Field(
-        description="Required explicit status: completed, in_progress, or planned; do not guess."
+        default=ProjectStatus.UNKNOWN,
+        description="Reported development status; default unknown, never inferred.",
     )
     description: NonEmptyText | None = Field(
         default=None, description="Reported project scope; distinguish plans from delivered work."
@@ -198,6 +213,10 @@ class Project(EvidenceRecord):
     technologies: list[NonEmptyText] = Field(
         default_factory=list,
         description="Reported technologies, interpreted with the project status.",
+    )
+    features: list[ProjectFeature] = Field(
+        default_factory=list,
+        description="Capabilities with independent implementation status, evidence, and review.",
     )
     responsibilities: list[NonEmptyText] = Field(
         default_factory=list,
@@ -219,9 +238,9 @@ class Project(EvidenceRecord):
         if (
             self.dates is not None
             and self.dates.is_current is True
-            and self.status != ProjectStatus.IN_PROGRESS
+            and self.status in (ProjectStatus.COMPLETED, ProjectStatus.PLANNED)
         ):
-            raise ValueError("Only an in_progress project can have an ongoing period.")
+            raise ValueError("A completed or planned project cannot have an ongoing period.")
         if (
             self.status == ProjectStatus.IN_PROGRESS
             and self.dates is not None
@@ -306,7 +325,8 @@ class ProfessionalProfile(ProfileModel):
         default_factory=list, description="Reported education records."
     )
     projects: list[Project] = Field(
-        default_factory=list, description="Projects with explicit development status and evidence."
+        default_factory=list,
+        description="Projects with reported or unknown development status and evidence.",
     )
     certifications: list[Certification] = Field(
         default_factory=list, description="Reported professional certifications."

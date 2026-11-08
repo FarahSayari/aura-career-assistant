@@ -54,7 +54,7 @@ assert restored == profile
 | `technical_skills` | `SkillCategory` groups individually reviewable `Skill` entries |
 | `work_experience` | `WorkExperience`: organization, role, location, dates, duties, achievements |
 | `education` | `Education`: institution, degree, specialization, dates |
-| `projects` | `Project`: explicit development status, scope, technologies, contributions, links |
+| `projects` | `Project`: reported/unknown status, optional features, scope, technologies, contributions, links |
 | `certifications` | `Certification`: name, issuer, issue/expiry dates, credential URL |
 | `awards` | `AwardAchievement`: title, description, issuer, award date, supporting URL |
 | `spoken_languages` | `SpokenLanguage`: language and optional reported proficiency |
@@ -73,7 +73,8 @@ All professional records inherit `sources` and `verification_status` from
 group skills; there is no root or category approval that silently verifies children.
 Review of an experience/project record covers its contained text, technologies, duties,
 and achievements as a unit. Separate child records, such as contact information under
-identity, keep their own review status. Per-sentence evidence is deliberately deferred.
+identity and features under a project, keep their own review status. Per-sentence evidence
+is deliberately deferred.
 
 ### Dates and development status
 
@@ -101,13 +102,22 @@ accepted. Certification expiry uses the same chronological validation.
 `DateRange.is_current` defaults to `None`, not true or false. An unknown end date does
 not imply present employment. An explicitly ongoing period cannot have an end date.
 
-Every project requires `status`: `completed`, `in_progress`, or `planned`. There is no
-default completion assumption. Planned projects cannot contain already achieved
-outcomes. Only an `in_progress` project can carry an explicitly ongoing period, and
-an ongoing project cannot carry an ended period. An in-progress project may report
+Project `status` supports `completed`, `in_progress`, `planned`, or `unknown`. Missing
+status defaults to `unknown`; dates, achievements, and feature statuses do not infer
+project completion. Planned projects cannot contain already achieved outcomes.
+Completed or planned projects cannot carry an explicitly ongoing period, and an
+in-progress project cannot carry an ended period. An unknown project status remains
+unknown even when dates are supplied. An in-progress project may report
 achievements already delivered without claiming that the entire project is complete.
 Future consumers must inspect project status alongside verification: a verified plan
 is still a plan, and its technologies do not establish completed experience.
+
+The optional `features` list defaults to an independent empty list, preserving existing
+project inputs. Each `ProjectFeature` has a required name, optional description, and
+the same four status values (default `unknown`). An ongoing project can contain both
+completed capabilities and planned additions. Features carry their own sources and
+verification status (default `unverified`); neither implementation status nor parent
+approval verifies a feature. Project status is not aggregated from feature statuses.
 
 ### Evidence and verification
 

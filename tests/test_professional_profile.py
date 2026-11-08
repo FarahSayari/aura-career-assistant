@@ -18,6 +18,7 @@ from aura.schemas import (
     ProfessionalProfile,
     ProfessionalSummary,
     Project,
+    ProjectFeature,
     ProjectStatus,
     Skill,
     SkillCategory,
@@ -202,7 +203,7 @@ def test_project_supports_multiple_sources_and_repository_references(
     assert str(project.links[1]) == "https://github.com/example/search-demo"
 
 
-@pytest.mark.parametrize("status", ["completed", "in_progress", "planned"])
+@pytest.mark.parametrize("status", ["completed", "in_progress", "planned", "unknown"])
 def test_project_status_is_explicit_and_preserved(status: str) -> None:
     project = Project(name="Synthetic project", status=status)
 
@@ -210,9 +211,80 @@ def test_project_status_is_explicit_and_preserved(status: str) -> None:
     assert project.verification_status == VerificationStatus.UNVERIFIED
 
 
-def test_project_status_is_required() -> None:
-    with pytest.raises(ValidationError, match="status"):
-        Project(name="Synthetic project")
+def test_missing_project_status_stays_unknown_and_unverified() -> None:
+    project = Project(name="Synthetic project")
+
+    assert project.status == ProjectStatus.UNKNOWN
+    assert project.verification_status == VerificationStatus.UNVERIFIED
+    assert project.features == []
+
+
+@pytest.mark.parametrize("dates", [{"is_current": True}, {"end": {"year": 2025}}, None])
+def test_reported_dates_and_achievements_do_not_infer_project_status(
+    dates: dict[str, Any] | None,
+) -> None:
+    project = Project(
+        name="Synthetic project", dates=dates, achievements=["Delivered a prototype."]
+    )
+
+    assert project.status == ProjectStatus.UNKNOWN
+    assert project.verification_status == VerificationStatus.UNVERIFIED
+
+
+def test_ongoing_project_supports_mixed_feature_statuses() -> None:
+    project = Project(
+        name="Synthetic dashboard",
+        status="in_progress",
+        features=[
+            {
+                "name": "Local search",
+                "description": "Search a local synthetic dataset.",
+                "status": "completed",
+                "sources": [{"source_type": "portfolio", "reference": "Demo capabilities"}],
+            },
+            {"name": "Filters", "status": "in_progress"},
+            {"name": "Exports", "status": "planned"},
+            {"name": "Notifications"},
+        ],
+    )
+
+    assert [feature.status for feature in project.features] == list(ProjectStatus)
+    assert project.features[0].description == "Search a local synthetic dataset."
+    assert project.features[0].sources[0].source_type == SourceType.PORTFOLIO
+    assert all(
+        feature.verification_status == VerificationStatus.UNVERIFIED for feature in project.features
+    )
+    assert project.status == ProjectStatus.IN_PROGRESS
+
+
+def test_feature_status_and_parent_review_do_not_imply_feature_verification() -> None:
+    project = Project(
+        name="Reviewed project",
+        verification_status="verified",
+        features=[{"name": "Reported capability", "status": "completed"}],
+    )
+
+    assert project.status == ProjectStatus.UNKNOWN
+    assert project.verification_status == VerificationStatus.VERIFIED
+    assert project.features[0].status == ProjectStatus.COMPLETED
+    assert project.features[0].verification_status == VerificationStatus.UNVERIFIED
+
+
+def test_feature_defaults_preserve_unknown_information() -> None:
+    feature = ProjectFeature(name="Reported capability")
+
+    assert feature.description is None
+    assert feature.status == ProjectStatus.UNKNOWN
+    assert feature.verification_status == VerificationStatus.UNVERIFIED
+    assert feature.sources == []
+
+
+def test_project_feature_list_defaults_are_independent() -> None:
+    first = Project(name="First project")
+    second = Project(name="Second project")
+    first.features.append(ProjectFeature(name="Local search"))
+
+    assert second.features == []
 
 
 def test_planned_project_cannot_claim_achievements() -> None:
@@ -221,7 +293,7 @@ def test_planned_project_cannot_claim_achievements() -> None:
 
 
 @pytest.mark.parametrize("status", ["planned", "completed"])
-def test_only_ongoing_projects_can_have_current_dates(status: str) -> None:
+def test_completed_or_planned_projects_cannot_have_current_dates(status: str) -> None:
     with pytest.raises(ValidationError, match="ongoing period"):
         Project(name="Synthetic project", status=status, dates={"is_current": True})
 
@@ -302,6 +374,7 @@ def test_invalid_urls_are_rejected(url: str, record_type: str) -> None:
     ("model", "data"),
     [
         (Project, {"name": "Demo", "status": "done"}),
+        (ProjectFeature, {"name": "Demo capability", "status": "done"}),
         (Skill, {"name": "Python", "verification_status": "approved"}),
         (SourceReference, {"source_type": "github", "reference": "Repository"}),
         (CareerPreferences, {"work_modes": ["anywhere"]}),
@@ -441,9 +514,45 @@ def test_complete_profile_json_round_trip(complete_profile: ProfessionalProfile)
     )
 
 
+def test_profile_json_preserves_unknown_and_mixed_feature_statuses() -> None:
+    profile = ProfessionalProfile(
+        projects=[
+            {
+                "name": "Synthetic dashboard",
+                "features": [
+                    {"name": "Search", "status": "completed"},
+                    {"name": "Filters", "status": "in_progress"},
+                    {"name": "Exports", "status": "planned"},
+                    {"name": "Notifications"},
+                ],
+            }
+        ]
+    )
+    serialized = profile.model_dump_json()
+    data = json.loads(serialized)
+
+    assert data["projects"][0]["status"] == "unknown"
+    assert [feature["status"] for feature in data["projects"][0]["features"]] == [
+        "completed",
+        "in_progress",
+        "planned",
+        "unknown",
+    ]
+    assert all(
+        feature["verification_status"] == "unverified"
+        for feature in data["projects"][0]["features"]
+    )
+    assert ProfessionalProfile.model_validate_json(serialized) == profile
+
+
 def test_schema_exposes_descriptions_and_enum_choices() -> None:
     schema = ProfessionalProfile.model_json_schema()
 
     assert schema["properties"]["technical_skills"]["description"]
-    assert schema["$defs"]["ProjectStatus"]["enum"] == ["completed", "in_progress", "planned"]
+    assert schema["$defs"]["ProjectStatus"]["enum"] == [
+        "completed",
+        "in_progress",
+        "planned",
+        "unknown",
+    ]
     assert schema["$defs"]["SourceType"]["enum"] == ["cv", "portfolio", "manual"]
