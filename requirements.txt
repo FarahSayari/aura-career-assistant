@@ -1,0 +1,2 @@
+# Dependency versions live in pyproject.toml; install Aura and its development tools.
+-e .[dev]

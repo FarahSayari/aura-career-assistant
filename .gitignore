@@ -1,0 +1,52 @@
+# Python environments, local runtime tools, and build output
+.venv*/
+.tools/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test, lint, and editor caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# Secrets (only the safe template belongs in Git)
+.env*
+!.env.example
+.streamlit/secrets.toml
+
+# Personal documents and private working data
+*.pdf
+*.doc
+*.docx
+*.odt
+*.rtf
+cv/
+cvs/
+resumes/
+private/
+data/
+uploads/
+
+# Local persistence, logs, generated artifacts, and temporary files
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+logs/
+generated/
+exports/
+tmp/
+temp/
+*.tmp
+*.bak
+Thumbs.db
+.DS_Store
