@@ -23,6 +23,11 @@ def test_defaults_work_without_dotenv_or_api_key() -> None:
     assert settings.app_name == "Aura 2.0 — Agentic AI Career Assistant"
     assert settings.app_env == "development"
     assert settings.gemini_api_key is None
+    assert settings.pdf_max_size_mb == 10
+    assert settings.gemini_model == "gemini-2.5-flash"
+    assert settings.agent_model == "gemini-3.5-flash-lite"
+    assert settings.agent_max_model_calls == 6
+    assert settings.agent_max_turns == 10
 
 
 def test_environment_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,3 +106,47 @@ def test_api_key_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.gemini_api_key.get_secret_value() == fake_key
     assert fake_key not in repr(settings)
     assert fake_key not in settings.model_dump_json()
+
+
+def test_pdf_file_limit_can_be_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AURA_PDF_MAX_SIZE_MB", "5")
+
+    assert Settings(_env_file=None).pdf_max_size_mb == 5
+
+
+def test_gemini_model_can_be_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AURA_GEMINI_MODEL", "enabled-stable-model")
+
+    assert Settings(_env_file=None).gemini_model == "enabled-stable-model"
+
+
+def test_agent_settings_override_without_changing_extraction_model(monkeypatch):
+    monkeypatch.setenv("AURA_AGENT_MODEL", "candidate-model")
+    monkeypatch.setenv("AURA_AGENT_MAX_MODEL_CALLS", "3")
+    monkeypatch.setenv("AURA_AGENT_MAX_TURNS", "4")
+    settings = Settings(_env_file=None)
+    assert settings.agent_model == "candidate-model"
+    assert settings.agent_max_model_calls == 3
+    assert settings.agent_max_turns == 4
+    assert settings.gemini_model == "gemini-2.5-flash"
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"agent_model": ""},
+        {"agent_max_model_calls": 1},
+        {"agent_max_model_calls": 13},
+        {"agent_max_turns": 0},
+        {"agent_max_turns": 21},
+    ],
+)
+def test_invalid_agent_limits_rejected(values):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_pdf_file_limit_must_be_positive(limit: int) -> None:
+    with pytest.raises(ValidationError, match="pdf_max_size_mb"):
+        Settings(pdf_max_size_mb=limit, _env_file=None)
