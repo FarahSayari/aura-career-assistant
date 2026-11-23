@@ -6,7 +6,7 @@ from aura.core.config import Settings
 
 
 def main() -> None:
-    """Render the M0 homepage without contacting external services."""
+    """Render Aura's homepage without contacting external services."""
     settings = Settings()
     st.set_page_config(page_title=settings.app_name, page_icon="✨", layout="wide")
 
@@ -17,11 +17,11 @@ def main() -> None:
         "Aura brings your professional profile, job opportunities, applications, and interview "
         "preparation into one personal workspace. We’re building it one useful step at a time."
     )
-    st.info("Project foundation is ready. Career features are Coming Soon.")
+    st.info("CV PDF text extraction is ready. Other career features are Coming Soon.")
 
     st.subheader("Your career workspace")
     features = (
-        ("CV Intelligence", "Build a verified profile from your skills, experience, and projects."),
+        ("CV Intelligence", "Upload a PDF CV and inspect its extracted text, page by page."),
         ("Job Matching", "Understand how a role fits your background and where you can grow."),
         ("Application Studio", "Prepare truthful, tailored cover letters and application emails."),
         ("Application Tracking", "Keep opportunities, application statuses, and notes organized."),
@@ -32,7 +32,11 @@ def main() -> None:
         for column, (title, description) in zip(columns, features[start : start + 2], strict=False):
             with column, st.container(border=True):
                 st.subheader(title)
-                st.caption(":primary[Coming Soon]")
+                if title == "CV Intelligence":
+                    st.caption(":primary[PDF text extraction available]")
+                    st.page_link("pages/cv_intelligence.py", label="Open CV Intelligence")
+                else:
+                    st.caption(":primary[Coming Soon]")
                 st.write(description)
 
     st.divider()

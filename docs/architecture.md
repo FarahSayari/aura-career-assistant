@@ -1,5 +1,90 @@
 # Aura 2.0 architecture
 
+## P1.1: notebook-based career agent
+
+The [current roadmap](roadmap.md) replaces the old milestone sequence. M0–M1.2b
+sections below describe preserved implementation history. P1.1 introduces a separate
+core agent and local runner; Streamlit chat, URL retrieval, live AI evaluation, and
+configured tracing are not yet implemented.
+
+```text
+Explicit PDF bytes + one pasted job + caller permission
+    -> local pdfplumber extraction and input limits
+    -> CareerAssistant (one instance per conversation)
+        START -> assistant (Gemini with bound tools)
+                    | tool calls         ^
+                    v                    |
+                  ToolNode --------------+
+                    |
+        assistant answer without calls -> END
+    -> unverified assessment; follow-ups reuse in-memory checkpoints
+```
+
+`aura/agent/graph.py` preserves the notebook's `MessagesState`, explicit assistant
+node, `ToolNode`, conditional routing, and in-memory checkpointer. Two scalar state
+fields count model/tool calls within the current turn. Each instance has an independent
+checkpointer and UUID thread. Follow-ups append messages; reset deletes old checkpoints
+and creates a new thread over the same inputs. Changed documents require a new instance.
+Do not share instances across users or invoke one concurrently.
+
+`aura/agent/tools.py` retains the notebook's two tool names. `extract_cv_text` returns
+the current uploaded CV's text and page numbers; `job_posting_tool` returns the pasted
+posting with its source label. Local evidence is prepared once, then returned through
+the tool loop. Neither tool accepts model-generated paths, URLs, credentials, or factual
+approval flags. No OpenAI call remains inside the job tool. Public URL retrieval will
+be added separately in P1.2.
+
+The PDF reader adapts the notebook's pdfplumber page loop from paths to `BytesIO`, with
+size/text limits, resource cleanup, safe errors, numbered blank pages, and rejection of
+encrypted or textless documents. PDF only is supported here; the notebook's DOCX/DOC
+paths are not ported. The existing PyMuPDF service is unchanged. Synthetic comparison
+tests preserve the same simple-page facts in both readers and demonstrate that
+pdfplumber interleaves a tested two-column layout where PyMuPDF orders by column.
+The agent reader is intentionally notebook-compatible, not a replacement for the
+existing layout-aware service; the final active-parser decision remains open.
+
+`aura/agent/model.py` constructs `ChatGoogleGenerativeAI` from explicit settings.
+`AURA_AGENT_MODEL` selects a provisional `gemini-3.5-flash-lite` independently of the
+earlier structured extractor's `AURA_GEMINI_MODEL`. The API key is shared through
+`SecretStr`; no provider fallback, model discovery, or automatic retry is performed.
+Ambient Google backend switches are rejected rather than silently changing backends.
+The adapter is constrained to 4.4.x to preserve compatibility with the existing SDK 2.x
+service. See the [official integration documentation](https://docs.langchain.com/oss/python/integrations/chat/google_generative_ai)
+and [LangGraph memory documentation](https://docs.langchain.com/oss/python/langgraph/add-memory).
+
+`aura/prompts/career_agent_v1.py` adapts the notebook's instructions for grounded
+comparisons and realistic suggestions, distinguishing absent evidence from an absent
+skill and reported facts from verified facts. CV/job instructions are untrusted data.
+Both tools must return successfully before the graph accepts an answer. The graph
+rejects unsupported tool names/arguments, invalid, empty, blocked or truncated model
+responses, and excessive calls. Fresh application message IDs prevent repeated provider
+IDs from replacing earlier history. These checks do not verify the truth of AI claims.
+
+Bounds are 6 model requests by default (configurable from 2 to 12), 4 tool calls per
+turn, at most 2 tool calls in one response, 60 seconds per request, 2,048 output tokens
+per response, and 10 successful turns by default (configurable from 1 to 20). Inputs
+have PDF byte, extracted CV, job, and question length limits. Failures produce predefined
+messages without raw provider details and require reset before another request, avoiding
+resumption of incomplete checkpointed tool exchanges. `close()` releases checkpoints,
+the graph's evidence closures, and owned model connections. An injected test model is
+not owned or closed by the service.
+
+`python -m aura.agent` is a manual runner for this slice. The user explicitly selects
+local files and grants external-processing permission; the model cannot choose files.
+The runner creates a conversation but sends nothing until a question is entered. It
+displays answers without writing a document store or log. Programmatic callers use
+`CareerAssistant(..., consent_to_send=True)` only after obtaining user permission.
+LangSmith is a framework dependency, but tracing is explicitly disabled around graph
+execution, including when enabled in the environment. Privacy-aware tracing is P1.4.
+
+Tests exercise real graph/tool execution with scripted model replies, session isolation,
+memory/reset, limits, safe failures, caller permission, and parser comparisons. Real
+LangChain + Gemini SDK serialization and function-result follow-ups are exercised over
+local HTTP mock transports; quota-error coverage checks that no retry occurs. The test
+guard blocks both SDK and adapter construction unless explicitly mocked. No personal
+CV, live API, cloud deployment, or factual-quality evaluation is involved. The module
+does not create or verify a `ProfessionalProfile`.
+
 ## M0: a small application with clear boundaries
 
 ```text
@@ -22,8 +107,9 @@ for the native theme options.
 
 `aura/` is the reusable Python package. M0 introduced `core/config.py`; M1.1 adds
 professional profile models under `schemas/`. These modules do not import Streamlit.
-Keeping settings, schemas, and future business logic outside the
-UI lets tests exercise behavior without launching a web server and allows future
+M1.2a adds a PDF parsing service under `services/`, with a separate Streamlit page in
+`app/pages/cv_intelligence.py`. Keeping reusable application logic outside the UI
+lets tests exercise behavior without launching a web server and allows future
 interfaces to reuse the same logic.
 
 `Settings` validates the application name and environment, loads optional credentials,
@@ -171,6 +257,216 @@ searchable evidence while structured profile facts retain their explicit fields 
 review status. M1.1 adds no ingestion, Gemini calls, UI forms, persistence, RAG, agents,
 or job matching, and introduces no dependencies beyond M0.
 
+## M1.2a: local PDF CV ingestion
+
+```text
+Streamlit CV Intelligence page
+    -> uploaded PDF bytes (memory only)
+    -> size/type checks + PyMuPDF extraction service
+    -> numbered pages + positioned text blocks + metadata
+    -> read-only page previews
+```
+
+`aura/services/pdf_extraction.py` accepts `bytes` through `extract_pdf_text`, independently
+of Streamlit. It opens the stream with PyMuPDF inside a context manager, so no temporary
+file is needed and the document closes on success or failure. The service does not
+construct or modify a `ProfessionalProfile`. Native parser diagnostics are suppressed
+while parsing, cleared from the diagnostic buffer, and restored afterward; raw parser
+errors or document fragments are never logged or displayed. A lock serializes this
+service's access to the process-wide native diagnostic settings.
+
+The results are simple dataclass containers, not new professional fact models:
+
+| Result | Contents |
+| --- | --- |
+| `PdfTextBlock` | Normalized text, bounding box in PDF points, original zero-based block index |
+| `PdfPage` | Original one-based page number, dimensions, text blocks, page text, optional layout warning |
+| `ExtractedPdf` | All pages, byte size, embedded metadata, repair flag, page count, combined text |
+
+Every original page is retained, including blank/image-only pages. The document's
+combined text uses `\f` separators to preserve page boundaries. Normalization removes
+trailing whitespace, converts tabs/nonbreaking spaces, and caps runs of blank lines;
+it retains line breaks, indentation, and internal spaces. Clear column layouts are
+ordered using the conservative geometry strategy below. Bounding boxes and original
+block indices remain available; blocks are reordered intact, never rewritten or split.
+See [PyMuPDF's text extraction guidance](https://pymupdf.readthedocs.io/en/latest/recipes-text.html).
+
+### Conservative column reading order
+
+The original extraction uses `get_text("blocks", sort=True)`: position-sorted blocks
+can put all category headings before their continuations in neighboring columns.
+The refinement starts with that same extraction and changes ordering only when a
+simple geometric interpretation is supported:
+
+1. Cluster nearby left edges. Potential columns must start at least 12% of page width
+   apart, which tolerates modest indentation without treating every indent as a column.
+2. Require two or three supported columns, at least two text lines per active column,
+   and vertical overlap between neighboring columns. Sequential sections with different
+   horizontal offsets are not treated as parallel columns.
+3. Require a clear gutter of at least 12 PDF points (or 2% of page width, whichever is
+   greater). A block crossing a gutter can act as a spanning heading/paragraph only if
+   its vertical extent is separate from all other text. Such dividers create sections;
+   column ordering never moves text across them.
+4. Read each section left-to-right by column, each column top-to-bottom. Keep every
+   multiline block intact, so headings and continuation blocks in one column remain
+   together before reading the next column.
+
+No text labels, CV sections, skill names, or personal facts participate in detection.
+For an unambiguous two-column section, `A heading, B heading, A detail, B detail`
+becomes `A heading, A detail, B heading, B detail`.
+
+Insufficient column evidence, overlapping blocks/dividers, narrow gutters, or unsupported
+offsets/column counts first trigger the local-region check below. When neither method
+qualifies, the **entire page** retains its exact original position-sorted order.
+A second coordinate-only inspection of native text lines detects rotated text
+and common cases where side-by-side lines were already merged into a single block;
+those also fall back without trying to split or invent text. Normal single-column pages
+keep the original order. A defaulted `PdfPage.layout_warning` field reports recognized
+ambiguities, and the existing Streamlit page displays it next to that page's preview.
+The extraction function signature, existing result fields, coordinates, indices,
+embedded metadata, page boundaries, and parsing/error-handling behavior are preserved.
+
+### Compact column regions on mixed-layout pages
+
+Page-wide left-edge clustering can combine the columns in one section with right-aligned
+labels elsewhere, producing too many candidates. A fixed 12-point gutter can also reject
+compact, non-overlapping columns. Neither issue requires splitting intact native blocks.
+
+When the page-wide method fails, `_local_column_order` looks for two multiline anchor
+blocks that sit side-by-side and share top and bottom edges within one estimated text
+line. It estimates line height from block height and reported line count, then collects
+whole blocks in the resulting vertical band, allowing one extra line for unequal column
+heights. The existing column confidence checks run again inside that region with a
+minimum gutter of `max(2 points, estimated line height / 4)`.
+
+Recovery requires a contiguous run in the original block order. It rejects cut/overlapping
+content, close aligned continuations left outside, and competing overlapping region
+interpretations. Only qualifying regions are reordered; every block's text, coordinates,
+and native index remain unchanged. Other page regions retain their original order.
+`layout_warning` explicitly reports local recovery rather than claiming the entire page
+used the original fallback. Merged-column or rotated native blocks still force the
+existing full-page fallback, without speculative line/span splitting.
+
+This is a left-to-right heuristic for clearly separated intact blocks, not a general
+layout parser. It cannot establish intended semantics for tables, recover all merged
+columns, infer that a short left-aligned heading visually spans columns, or detect
+every irregular layout. The conservative fallback can leave the original ordering
+problem visible; it deliberately avoids confidently returning a speculative correction.
+
+### Processing boundaries
+
+`Settings.pdf_max_size_mb` (environment variable `AURA_PDF_MAX_SIZE_MB`) defaults to
+10 MiB and must be positive. The page applies it to Streamlit's upload widget; the
+service independently checks the actual byte length before opening the PDF. Bytes,
+PDF identification, zero-page documents, encryption, parsing errors, and extractable
+text are checked separately. All encrypted PDFs are rejected, including those that
+open without a user password. Password entry and OCR are deferred.
+
+Expected failures raise `PdfExtractionError` with a predefined user-facing explanation.
+An unreadable page fails the extraction rather than silently returning a partial
+success. Recoverable damage may be repaired by PyMuPDF and is flagged in the result.
+A document with some textless pages returns those numbered pages with warnings in the
+UI; an entirely textless document returns an error explaining the OCR limitation.
+
+`app/pages/cv_intelligence.py` uses Streamlit's native multipage navigation and the
+existing theme. Uploading does not extract text until the user clicks **Extract document
+text**. It displays page count, byte-derived file size, embedded metadata, and read-only
+text areas labeled by page. Errors are rendered with `st.error`, not exception dumps.
+Results are rendered during the extraction run without shared caches or a persistent
+result store. Changing/removing the upload clears the preview and requires another
+explicit extraction. Uploaded bytes and text remain in session/process memory managed
+by Streamlit; there is no disk save, external service, document logging, or database.
+
+Ambiguous column layouts and tables may still interleave, text encodings may omit or distort
+characters, and image-based pages have no text without OCR. A page with a small
+selectable header over a scan can return only that header; this milestone does not
+guarantee full text coverage or detect all scanned regions. Always compare previews
+against the original. PDF metadata is unverified document-provided information.
+
+M1.2b consumes these pages to propose unverified structured facts with application-owned
+document references, as described below. Extracting text does not verify those facts.
+Portfolio ingestion, profile verification, persistence, Qdrant/RAG, and agents remain
+unimplemented.
+
+## M1.2b: Gemini structured CV extraction
+
+```text
+In-memory ExtractedPdf
+    -> explicit Google-transmission confirmation + Analyze with Gemini click
+    -> gemini_extraction.extract_cv_profile (official google-genai SDK)
+    -> CvExtraction JSON validation (untrusted facts only)
+    -> profile_conversion.to_professional_profile (domain validation + app provenance)
+    -> new ProfessionalProfile, all records unverified
+    -> Streamlit JSON preview in session memory
+```
+
+### Separate factual extraction from application authority
+
+`aura/schemas/cv_extraction.py` defines small factual models mirroring the professional
+fields. It reuses safe value types (`PartialDate`, `DateRange`, `ProjectStatus`) but
+does not inherit `EvidenceRecord`. It contains no verification states, source references,
+career preferences, existing-profile IDs, or update operations. Unknown fields are
+forbidden at every object level. Unknown dates remain partial/null and project/feature
+status defaults to `unknown`.
+
+This purposeful separation prevents model-generated approval or provenance from entering
+the domain model through an accepted extraction payload. `CvExtraction.model_validate_json`
+validates the raw response regardless of any SDK parsing. `profile_conversion.py` then
+validates it against `ProfessionalProfile`, including project/date consistency rules,
+and walks the resulting record tree to assign application-created CV references and
+explicit `unverified` states, including skills, contact details, summaries, and features.
+Career preferences remain absent. It creates a fresh profile and never receives an
+existing verified profile to modify.
+
+Provenance is document-level: the application supplies the uploaded filename and page
+range after the response. Gemini receives neither the filename nor an opportunity to
+author trusted references. Page-level attribution is explicitly unresolved rather than
+inventing citations. References remain pointers to unverified evidence, not proof.
+
+### Prompt and API boundary
+
+`aura/prompts/cv_extraction_v1.py` contains `PROMPT_VERSION` and the system instruction.
+The prompt requires explicit CV evidence, original skill categories, reported date
+precision, independent project/feature status, and no duplicate experiences/projects.
+All document content is untrusted data, including apparent instructions. The separate
+user payload contains numbered pages and ordered text blocks with coordinates and
+layout warnings. No tools, browsing, remote PDF upload, or agent workflow is enabled.
+
+`aura/services/gemini_extraction.py` owns every external call. It uses API-key-based
+Gemini Developer API access, explicitly disables Vertex/enterprise selection, and reads
+`AURA_GEMINI_API_KEY`/`AURA_GEMINI_MODEL` from validated settings. The default model is
+`gemini-2.5-flash`; project access must be confirmed manually. There is no model fallback
+or automatic model-discovery request. The key is masked in normal representations.
+
+Requests set JSON MIME type and `response_json_schema` from `CvExtraction`, temperature
+zero, an 8,192-token output cap, a 60-second timeout, and one total SDK attempt (no retry).
+The service closes its client with a context manager. It accepts only a completed
+single-candidate response, then independently validates and converts the JSON. Errors
+are mapped by status/type to predefined messages; response bodies, validation inputs,
+API keys, and CV content are not logged or exposed through UI exceptions.
+
+### Consent, session state, and limits
+
+The CV page calls the service only when the confirmation checkbox is true **and** the
+user clicks **Analyze with Gemini**. Upload, local extraction, confirmation alone, and
+ordinary reruns do not invoke it. All extracted CV text (potentially including contact
+details), block coordinates, page numbers, and layout warnings are sent to Google;
+the binary PDF and embedded metadata are not. The UI explains this before confirmation.
+Provider terms, data handling, and quotas still apply remotely.
+
+Local PDF text and the preview profile live only in `st.session_state`, without shared
+caches or durable storage. New uploads or explicit re-extraction clear analysis and
+consent. Analysis errors preserve the local PDF preview while removing a previous
+structured result, so stale success is not shown as the failed request's output.
+All accepted records are labeled **Unverified**; no verification UI or save operation
+is part of M1.2b.
+
+Structural validation is not factual verification. Prompt injection, hallucinated or
+omitted claims, duplication, wrong grouping, PDF extraction errors, model availability,
+and output truncation remain limitations. Models may return semantically unsupported
+facts in otherwise valid JSON. No live model accuracy or project access was established
+by automated testing. Review every extracted fact against its source before use.
+
 ## Packaging and checks
 
 `pyproject.toml` declares Python 3.12–3.13, runtime dependencies, development extras,
@@ -189,7 +485,30 @@ descriptions for later structured outputs. Pydantic's
 [validation](https://docs.pydantic.dev/latest/concepts/validators/) and
 [serialization](https://docs.pydantic.dev/latest/concepts/serialization/) APIs provide
 the underlying validation and round-trip behavior.
-No database, service container, API credential, or mocking framework is needed.
+No database, service container, or real API credential is needed for the tests.
+
+`tests/conftest.py` generates synthetic PDFs in memory for the PDF service and Streamlit
+tests. PDF tests exercise text, page boundaries and coordinates, metadata, invalid and
+textless inputs, encryption, corruption/recovery, size limits, and parser cleanup.
+`tests/test_pdf_reading_order.py` generates single-, two-, and three-column PDFs with
+multiline continuations and spanning headings. It verifies corrected column order,
+preserved blocks/coordinates/metadata, and exact fallback for sparse, overlapping,
+sequential, or already-merged layouts, without personal CV fixtures.
+Additional synthetic regressions cover mixed-layout pages with extra right-aligned
+labels, narrow positive gutters, fragmented column continuations, preservation of the
+following heading, and rejection of cut continuations or intervening content. Real PDFs
+may be inspected in place with the ignored `.tools/diagnose_pdf_layout.py` utility. Its
+report contains geometry and decision paths only, never CV text or embedded metadata.
+Streamlit tests cover navigation, explicit extraction, numbered previews, safe errors,
+and clearing stale results when the upload changes. No real CV fixture is read or saved.
+
+`tests/test_gemini_extraction.py` uses mocked SDK responses for factual/optional fields,
+partial dates, features, trust-field rejection, provenance, preferences, errors, and
+JSON round trips. One real-SDK test uses a local HTTP mock transport to verify request
+serialization without network access. `tests/conftest.py` blocks live SDK construction
+by default. Streamlit tests mock the service and exercise the confirmation/button gate.
+The synthetic gold cases in `evals/cv_extraction_baseline.json` are versioned alongside
+the prompt; offline contract tests are not a measurement of actual Gemini accuracy.
 
 All installation and execution happen inside `.venv`. Local runtime downloads and
 the preserved previous environment are ignored and are not project dependencies.
@@ -203,8 +522,8 @@ The intended flow is approved personal evidence → verified profile → normali
 | Component | Future responsibility | Boundary |
 | --- | --- | --- |
 | Pydantic models | Profile schemas implemented in M1.1; job/output schemas later | Validate data before using it |
-| Gemini API | Language extraction, reasoning, drafting, interview feedback | Dedicated client/service; no UI API calls |
-| LangGraph | Stateful workflows and review gates where needed | Plain Python for predictable operations |
+| Gemini API | CV extraction implemented; reasoning/drafting/interviews later | Dedicated service; explicit UI consent |
+| LangGraph | P1.1 core agent implemented; Streamlit chat and later workflows planned | Explicit assistant/tools graph; isolated in-memory conversations |
 | Qdrant | Semantic retrieval over approved evidence | Preserve source references; keep structured facts structured |
 | PostgreSQL | Jobs, application state, notes, draft and session history | Persistence layer separate from Streamlit |
 | MLflow | Compare prompts/configurations and evaluation results | Add with measurable AI experiments |

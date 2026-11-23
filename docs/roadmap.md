@@ -1,78 +1,192 @@
 # Aura 2.0 roadmap
 
-This roadmap summarizes the milestone sequence in the preserved
-[`Aura_2_0_Project_Hub_Notion.md`](../Aura_2_0_Project_Hub_Notion.md).
-The current M0 request supersedes that older reference where scope differs:
-Gemini calls and GitHub Actions are deferred, the package structure is `app/` plus
-`aura/`, and PostgreSQL is the planned future relational database. No database is
-introduced in M0. There are no fixed delivery dates.
+## Direction: Prototype 1
 
-## M0 — Project Foundation (implemented)
+The immediate goal is a functional LangGraph career assistant based on the course
+notebook `3.7 Integrating Tools into the Agent.ipynb`. It should compare a user's CV
+with supplied jobs and support follow-up questions through Streamlit. Development
+proceeds in small, reviewable steps without fixed delivery dates.
 
-- Python 3.12 or 3.13 in a project-specific `.venv`.
-- Minimal Streamlit homepage with all five career areas marked Coming Soon.
-- Pydantic Settings, safe dotenv template, and optional future Gemini credential.
-- Pytest configuration and meaningful settings/rendering tests; Ruff checks.
-- Setup, architecture, privacy, and roadmap documentation.
+This roadmap replaces the previous M0–M6 implementation sequence. The original
+[`Aura_2_0_Project_Hub_Notion.md`](../Aura_2_0_Project_Hub_Notion.md) remains a historical
+planning reference. [architecture.md](architecture.md) describes the existing
+implementation; planned work below is not implemented behavior.
 
-Completion means the local application renders, configuration works without API
-credentials, and tests and lint checks pass. No API integration, persistence, agent
-workflow, CI workflow, commits, or publishing is included in this implementation.
+Keep the existing repository and useful completed work. Adapt the notebook into
+modules rather than starting an empty project or deleting earlier services. Updating
+this plan does not implement the agent or authorize automatic commits, pushes, paid
+experiments, or deployment.
 
-## M1 — Personal profile (planned)
+## Starting point
 
-Define a `ProfessionalProfile`, ingest a CV, and let the user review and correct facts
-before trusting them. Add career preferences, a cover-letter template, and selected
-portfolio/GitHub evidence with attribution. Introduce parsing, AI extraction, retrieval,
-and experiment tooling only as the selected slice needs them.
+| Work | Current status | Role in Prototype 1 |
+| --- | --- | --- |
+| M0 — Foundation | Implemented | Reuse Streamlit, configuration, `.venv`, tests, Ruff, and documentation |
+| M1.1 — ProfessionalProfile | Implemented, including feature and unknown statuses | Preserve schemas, evidence references, and unverified states |
+| M1.2a — PDF ingestion | Implemented, including multi-column refinements | Preserve in-memory parsing, layout information, error handling, and tests |
+| M1.2b — Gemini extraction | Implemented; live model access and accuracy not established | Preserve the service and tests; reuse where helpful |
+| Course notebook / P1.1 | Core graph and tools ported into modules; local runner and offline tests implemented | Preserve the original notebook; live AI validation, Streamlit chat, and tracing remain pending |
 
-Completion: an accurate, editable, approved profile with source evidence.
-The next development task is to agree on the profile schema and review workflow.
+The application currently previews PDF text and an optional unverified Gemini profile.
+The P1.1 local runner now supports the modular comparison agent and follow-up chat;
+the Streamlit interface does not expose it yet. URL retrieval remains planned. Mocked
+tests validate integration behavior, not live AI quality.
 
-## M2 — First working job-fit slice (planned)
+The notebook's assistant and job-posting tool both depend on OpenAI. Replacing only
+the assistant model would leave an OpenAI dependency inside the tool. Its CV reader
+uses pdfplumber, while the application uses PyMuPDF. Preserve both during review and
+compare synthetic outputs before choosing the prototype's active parser; do not
+silently substitute the notebook's reader.
 
-Accept a pasted job description, validate a `JobPosting`, compare requirements against
-approved profile evidence and preferences, and explain fit and skill gaps. Distinguish
-unknown evidence from absent skills. Build a small manually labeled evaluation set.
+## Prototype 1 scope
 
-Completion: meaningful end-to-end assessment of one pasted job; the first usable slice.
+Prototype 1 must:
 
-## M3 — Tailored applications (planned)
+1. Accept an uploaded CV, starting with selectable-text PDFs.
+2. Accept one or more user-supplied job URLs, with pasted descriptions as a fallback.
+3. Extract relevant CV facts and job requirements with supporting evidence.
+4. Compare qualifications with requirements for each job.
+5. Explain compatibility, strengths, weaknesses, and skill gaps.
+6. Recommend realistic CV improvements without inventing experience or achievements.
+7. Support conversational follow-up questions within the current session.
+8. Provide a functional Streamlit interface.
+9. Use LangSmith for tracing and debugging with private content protected.
+10. Include automated tests and a small, documented AI evaluation baseline.
+11. Be deployable to Streamlit Community Cloud.
 
-Generate editable cover letters and email drafts from approved evidence and saved
-templates. Recommend truthful CV emphasis. Require review before exported content is
-treated as approved; evaluate factual grounding and unsupported claims.
+Cover letters, application tracking, interview preparation, portfolio ingestion/RAG,
+and automatic job discovery are outside Prototype 1. Database persistence, OCR, a
+profile approval workflow, Qdrant, multi-agent orchestration, and MLflow are also
+deferred. A complete, saved, verified profile is not required for the first comparison.
 
-Completion: reviewed application drafts for an analyzed job, without invented experience.
+## Implementation steps
 
-## M4 — Application tracking (planned)
+P1.1 is implemented and verified offline; P1.2–P1.5 remain planned. Complete and review
+each working slice before expanding it. Live model access and quality remain unverified.
 
-Introduce relational persistence for opportunities, statuses, dates, notes, and draft
-versions. PostgreSQL is the future database named in the current stack. Add duplicate
-warnings and filters. Record actual submissions through user updates.
+### P1.1 — Port the notebook's core agent
 
-Completion: a useful application history with editable statuses and saved drafts.
+Status: implemented and verified with synthetic inputs, scripted model responses,
+and the real Gemini adapter over local HTTP mocks. No live model request was made.
+The provisional agent model is independently configurable; benchmark selection remains
+open. The notebook's pdfplumber reader is retained with explicit column-order warnings,
+while the existing PyMuPDF service and its layout tests are preserved.
 
-## M5 — Interview preparation (planned)
+- Retain the explicit LangGraph assistant → tools → assistant loop, conditional
+  routing, and tool purposes: `extract_cv_text` and `job_posting_tool`.
+- Move graph, prompts, tools, and model configuration into small reusable modules;
+  keep Streamlit presentation separate from agent and document logic.
+- Adapt CV access to an uploaded document in session memory rather than an arbitrary
+  local path generated by the model. Start with PDF; DOC conversion is deferred.
+- Introduce a configurable Gemini candidate and test tool calling before choosing a
+  default. Replace OpenAI-dependent calls inside the job tool as well.
+- Start job intake with pasted descriptions to evaluate reasoning separately from
+  website access. Bound model/tool calls and return useful errors rather than loops
+  or raw exceptions.
 
-Create role-specific HR/technical questions, grounded sample answers, mock interviews,
-structured feedback, and saved practice sessions. Add LangGraph only for workflows
-that benefit from stateful coordination; add LangSmith when tracing such workflows.
+Completion: a synthetic PDF and one pasted job description produce an evidence-based
+comparison through the modular agent, with a working follow-up question and tests.
 
-Completion: a saved job can launch tailored practice with actionable feedback.
+### P1.2 — Add job URLs and multiple-job comparison
 
-## M6 — Reliability and packaging (planned)
+- Adapt the job tool to retrieve supplied public URLs, retaining source URLs and
+  relevant posting text alongside extracted requirements.
+- Evaluate retrieval separately from the LLM; search/extraction services have their
+  own limits and possible costs. Validate URLs and redirects, preventing access to
+  private/local network resources from a deployed application.
+- Handle inaccessible, expired, blocked, or empty postings explicitly. Offer pasted
+  text instead of fabricating details or treating snippets as complete postings.
+- Keep each job's evidence separate and explain comparisons across multiple jobs.
+  Retrieval is limited to user-supplied opportunities, not automatic discovery.
 
-Expand regression evaluations for the AI behavior actually implemented. Use MLflow
-for experiments and appropriate tracing for agent behavior; avoid duplicate tracking.
-Automate inexpensive tests and lint with GitHub Actions, run paid API evaluations
-selectively, and document privacy and operational limitations. Consider Docker only
-if it improves repeatability.
+Completion: multiple supplied jobs can be assessed separately and compared, with a
+usable pasted-text fallback whenever a URL cannot be read.
 
-Completion: a documented, repeatable personal V1 with evidence for its quality limits.
+### P1.3 — Build the Streamlit conversation
 
-## Optional expansion after V1
+- Add CV upload, job URL/pasted-text inputs, an explicit analysis action, and chat.
+- Present compatibility, evidence-backed strengths, gaps or unknowns, and practical
+  CV suggestions without implying a hiring decision or calibrated probability.
+- Give each session its own conversation identifier and document/job context; do not
+  reuse the notebook's fixed thread ID across users.
+- Prevent reruns from repeating model calls unintentionally. Provide reset controls
+  and clear stale document-dependent results when the CV changes.
+- Keep uploads and conversation checkpoints in memory. Explain that resets or
+  restarts can lose the conversation; no durable history is promised.
 
-Permitted job-discovery connectors, cited company interview research, career insights,
-and safely isolated coding practice may follow. Keep manual job intake usable and
-retain user control of external actions. These are options, not M0 commitments.
+Completion: upload → job intake → assessment → follow-up works in Streamlit, with
+isolated sessions and clear error/reset behavior.
+
+### P1.4 — Trace, test, and evaluate
+
+- Configure LangSmith before execution, with meaningful graph/model/tool names.
+  Hide sensitive inputs, outputs, and metadata; use synthetic cases for detailed traces.
+- Retain useful tests; add offline tests for routing, tool contracts, retrieval errors,
+  call limits, session isolation, and UI actions. Mock external services in normal tests.
+- Keep live evaluation separate so automated tests cannot unexpectedly spend credits.
+- Build synthetic CV/job cases covering strong and partial matches, missing evidence,
+  multiple jobs, follow-ups, and instructions embedded in untrusted documents.
+- Record model ID, prompt version, groundedness, requirement coverage, unsupported
+  claims, recommendation quality, tool failures, latency, and available usage/cost data.
+- Distinguish missing CV evidence from a missing skill, schema validity from factual
+  accuracy, and reported facts from verified information. Do not auto-verify AI output.
+- Optionally compare Gemini with OpenAI on the same cases using remaining credit,
+  only after agreeing on a small experiment budget. OpenAI is not required by default.
+
+Completion: Pytest and Ruff pass, traces explain execution failures, and a recorded
+AI evaluation describes observed quality and limitations. Mocked tests alone do not
+satisfy the AI evaluation requirement.
+
+### P1.5 — Prepare and validate Community Cloud deployment
+
+- Declare reproducible dependencies and a supported cloud Python version. Remove
+  assumptions about Windows paths, local files, and notebook execution order.
+- Load credentials through cloud secrets; keep secrets and personal documents out of Git.
+- Check provider terms, account access, and quotas before using real CVs. Use synthetic
+  documents during free-tier development and protect private content in traces.
+- Add practical input/request limits and document session lifetime, external data
+  transmission, website-access failures, and known limitations.
+- Document deployment and smoke testing. Publish only when explicitly requested,
+  then validate upload, job intake, assessment, follow-up, reset, and safe errors.
+
+Completion: deployment instructions and dependencies are ready; release validation
+additionally requires a successful smoke test of the hosted application.
+
+## Prototype 1 release checklist
+
+- [ ] Uploaded synthetic CV and one pasted job produce a grounded assessment.
+- [ ] Supplied URLs work where accessible; failures offer pasted-text fallback.
+- [ ] Multiple jobs retain separate evidence and can be compared.
+- [ ] Advice distinguishes reported facts, unsupported claims, and unknown information.
+- [ ] CV suggestions invent no qualifications, metrics, or completed projects.
+- [ ] Follow-ups retain context; sessions remain isolated and reset works.
+- [ ] Agent calls are bounded and ordinary UI reruns do not resend requests.
+- [ ] LangSmith tracing is useful without exposing private CV content.
+- [ ] Full offline Pytest suite and Ruff lint/format checks pass.
+- [ ] A live synthetic AI evaluation is recorded separately from mocked tests.
+- [ ] Cloud setup is documented and the deployed app passes a smoke test.
+
+## Decisions to resolve during implementation
+
+- Which Gemini model meets tool-use, reasoning, latency, quota, and data-handling needs?
+  Benchmark before selecting it; a free tier alone is not sufficient evidence.
+- Which retrieval backend can reliably read representative supplied postings?
+- Which PDF reader preserves useful CV text while keeping the migration understandable?
+  Preserve the existing multi-column regression cases.
+- How much structured output helps comparison without making a full profile
+  extraction/approval workflow mandatory?
+
+## Future prototypes
+
+These are possible follow-on slices, not a fixed implementation order:
+
+| Candidate scope | Intended outcome |
+| --- | --- |
+| Tailored applications | Reviewed cover letters and application drafts grounded in evidence |
+| Application tracking | Saved opportunities, statuses, notes, and application history |
+| Interview preparation | Role-specific practice and actionable feedback |
+| Portfolio intelligence / RAG | Consolidated CV/portfolio evidence and retrieval when needed |
+| Job discovery | Permitted discovery connectors while retaining manual job intake |
+
+Choose the next prototype after reviewing Prototype 1. Introduce persistence,
+retrieval infrastructure, and additional orchestration only when needed.
