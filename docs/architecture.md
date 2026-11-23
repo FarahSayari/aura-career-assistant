@@ -1,11 +1,102 @@
 # Aura 2.0 architecture
 
+## P1.2: supplied job URLs and multiple-job evidence
+
+P1.2 preserves the assistant/tools graph, CV reader, profile schemas, model boundary,
+and current Streamlit pages. It extends job intake and tool evidence, without an
+additional LLM call inside the job tool. The user has reported a successful live P1.1
+manual smoke test; P1.2's multi-job reasoning is tested offline, not benchmarked live.
+
+```text
+One CV + one to five JobInput records
+    -> create tools (local validation, no web request)
+    -> assistant requests job_posting_tool
+        -> supplied URL -> bounded public HTTP -> job text
+        -> failed URL -> explicit pasted fallback, if supplied
+        -> no readable source -> unavailable record + fallback message
+    -> cached records with job IDs, requested/final URLs, source labels, and warnings
+    -> assistant assesses readable jobs separately and compares with citations
+```
+
+`aura/schemas/job.py` defines frozen `JobInput` values: optional document label,
+HTTP(S) URL, and pasted description. At least one source is required; credentials
+in URLs, blank values, excessive text, and unknown fields are rejected. IDs such as
+`job_1` are assigned by input order, not inferred professional facts. The legacy
+`CareerAssistant(pdf_bytes, pasted_description, ...)` signature remains supported;
+callers can instead supply `jobs=[JobInput(...), ...]`. Both forms together are rejected.
+
+`aura/services/job_retrieval.py` owns networking and HTML parsing, independently of
+Streamlit and Gemini. Direct retrieval was chosen for this slice to avoid another
+API credential or search dependency. It accepts only supplied public HTTP(S) URLs
+on standard ports. A custom HTTPX transport checks every DNS result, rejects private,
+local, reserved, multicast, and supported IPv6 transition cases, and pins the socket
+target to a validated IP. Original Host and TLS SNI are preserved using HTTPX's
+[documented extension](https://www.python-httpx.org/advanced/extensions/#sni_hostname).
+This avoids validating one DNS answer and then connecting through a second unchecked
+resolution. HTTPS certificate verification stays enabled, proxies are disabled, and
+redirects are explicit and rechecked; HTTPS-to-HTTP redirects are rejected.
+
+Each retrieval owns and closes its HTTP client and response streams, performs no
+automatic retries, follows at most three redirects, and accepts at most 2 MiB of
+uncompressed HTML. There is a 10-second I/O timeout and a checked 30-second budget
+across redirects and stream reads. DNS resolution uses the OS and is not subject to
+HTTPX's timeout; this is not a hard wall-clock deadline. Job content is not logged,
+saved, or sent to a retrieval provider. The job site sees the GET request and client
+network address, but does not receive CV or conversation content.
+
+The parser prefers a single schema.org `JobPosting` JSON-LD record, preserving its
+description and reported metadata. It detects supported reported expiry dates without
+inventing a midnight cutoff for date-only expiry. Multiple embedded postings fail as
+ambiguous. Without structured data, a `main` or `article` region must have enough text
+and recognizable English role-description/responsibility and qualification signals.
+Menus, scripts, forms, and footer content are excluded from plain text. This is HTML
+text extraction, not browser rendering, authenticity checking, or proof of completeness.
+
+`aura/agent/tools.py` prepares CV evidence locally, then lazily retrieves jobs on the
+first job-tool call. A lock protects the per-instance cache from duplicate parallel
+tool calls. Each record retains `job_id`, document label, requested URL, final URL,
+`source` (`job_url`, `pasted_job`, or `unavailable`), text, extraction method, and warning.
+When URL access fails, provided pasted text is explicitly labeled as pasted evidence;
+the requested URL is a reference, not a claim that the text was downloaded there.
+Unreadable jobs retain no text. Combined evidence is capped at 40,000 characters,
+each job at 20,000, and input count at five. Oversized sources are not silently cut.
+
+`aura/prompts/career_agent_v2.py` asks for separate per-job assessments followed by
+comparison, citing job IDs and CV pages, excluding unreadable jobs from ranking, and
+respecting fallback warnings. The graph refuses a final assessment if no job is readable.
+Facts and conclusions remain unverified. IDs and source labels reduce accidental mixing;
+they do not mechanically prove every model claim is correctly attributed. Follow-ups
+and resets reuse the fixed cached evidence. New or changed job inputs require a new
+agent instance, avoiding stale tool results mixed with new documents.
+
+The local runner accepts repeated `--job-url`, `--job` for a single pasted posting or
+single-URL fallback, or `--jobs` for a UTF-8 JSON list of explicitly paired inputs.
+The manifest is input data, not a database, model-generated path, or automatically
+saved artifact. External-processing permission is required before creation; URLs are
+not fetched until the job tool executes. See the README for exact commands and format.
+
+Offline tests exercise fake DNS and HTTP responses through the real public transport,
+IP pinning and TLS hostname forwarding, redirects, size/type/error handling, JSON-LD
+and HTML extraction, source pairing, caching, and multi-job conversation. Real Gemini
+adapter serialization is also tested with multiple jobs over local mock HTTP. A live
+public Python.org posting was retrieved successfully without any CV or Gemini request.
+This is a retrieval smoke test, not broad site coverage or a job recommendation.
+
+Known limitations: JavaScript-only pages, access barriers, compressed/non-HTML responses,
+unsupported language/layout patterns, and ambiguous listings can require pasted text.
+No search, automatic job discovery, browser automation, persistence, Streamlit chat,
+profile verification, or tracing is added here. All normal tests block live HTTP/DNS
+and model clients; local `.env` files are excluded from test configuration.
+
 ## P1.1: notebook-based career agent
 
 The [current roadmap](roadmap.md) replaces the old milestone sequence. M0–M1.2b
 sections below describe preserved implementation history. P1.1 introduces a separate
-core agent and local runner; Streamlit chat, URL retrieval, live AI evaluation, and
+core agent and local runner; Streamlit chat, formal AI evaluation, and
 configured tracing are not yet implemented.
+
+The following describes the original P1.1 boundary; P1.2 above extends job intake and
+uses prompt v2. Its new job-tool payload is a collection, including for a single job.
 
 ```text
 Explicit PDF bytes + one pasted job + caller permission

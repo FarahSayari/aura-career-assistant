@@ -8,6 +8,8 @@ from langsmith import get_tracing_context
 
 from aura.agent import CareerAgentError, CareerAssistant
 from aura.core.config import Settings
+from aura.schemas.job import JobInput
+from aura.services.job_retrieval import JobRetrievalError, RetrievedJob
 
 
 def read_sources():
@@ -45,11 +47,13 @@ class ScriptedModel:
 def agent_factory(make_pdf):
     agents = []
 
-    def create(responses, **settings):
+    def create(responses, *, jobs=None, job_retriever=None, **settings):
         model = ScriptedModel(responses)
         agent = CareerAssistant(
             make_pdf(["Alex Example\nPython developer\nBuilt a test suite"]),
-            "Python required. Kubernetes preferred.",
+            "Python required. Kubernetes preferred." if jobs is None else None,
+            jobs=jobs,
+            job_retriever=job_retriever,
             settings=Settings(_env_file=None, **settings),
             consent_to_send=True,
             model=model,
@@ -76,7 +80,7 @@ def test_cv_job_assessment_and_followup_reuse_real_tool_evidence(agent_factory):
     tool_messages = [m for m in model.seen[1] if isinstance(m, ToolMessage)]
     evidence = {m.name: json.loads(m.content) for m in tool_messages}
     assert "Python developer" in evidence["extract_cv_text"]["pages"][0]["text"]
-    assert "Kubernetes preferred" in evidence["job_posting_tool"]["text"]
+    assert "Kubernetes preferred" in evidence["job_posting_tool"]["jobs"][0]["text"]
     assert agent.ask("How should I improve my CV?").startswith("Emphasize")
     assert len(model.seen) == 3
     assert any(isinstance(m, AIMessage) and m.content == answer for m in model.seen[2])
@@ -227,3 +231,43 @@ def test_ambient_tracing_stays_disabled(agent_factory, monkeypatch):
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
     agent, _ = agent_factory([read_sources(), AIMessage("Answer")])
     assert agent.ask("Compare") == "Answer"  # ScriptedModel asserts tracing context is off.
+
+
+def test_multiple_jobs_and_followup_preserve_separate_evidence(agent_factory):
+    def fetch(url):
+        return RetrievedJob("Python required", url, "json_ld_job_posting")
+
+    agent, model = agent_factory(
+        [
+            read_sources(),
+            AIMessage("job_1: Python fit; job_2: SQL not demonstrated."),
+            AIMessage("job_2 requires SQL; job_1 requires Python."),
+        ],
+        jobs=[
+            JobInput(url="https://jobs.example.test/python"),
+            JobInput(description="SQL required"),
+        ],
+        job_retriever=fetch,
+    )
+    assert "job_1" in agent.ask("Compare both jobs")
+    message = next(
+        m for m in model.seen[1] if isinstance(m, ToolMessage) and m.name == "job_posting_tool"
+    )
+    jobs = json.loads(message.content)["jobs"]
+    assert jobs[0]["text"] == "Python required" and jobs[1]["text"] == "SQL required"
+    assert jobs[0]["source"] == "job_url" and jobs[1]["source"] == "pasted_job"
+    assert "job_2 requires SQL" in agent.ask("Which job requires SQL?")
+
+
+def test_all_unavailable_jobs_require_pasted_descriptions(agent_factory):
+    def fetch(_):
+        raise JobRetrievalError("Website inaccessible. Paste the description instead.")
+
+    agent, model = agent_factory(
+        [read_sources(), AIMessage("An unsupported assessment must not be displayed.")],
+        jobs=[JobInput(url="https://jobs.example.test/blocked")],
+        job_retriever=fetch,
+    )
+    with pytest.raises(CareerAgentError, match="Supply pasted descriptions"):
+        agent.ask("Compare")
+    assert len(model.seen) == 1  # No further paid reasoning call when every source failed.

@@ -9,8 +9,8 @@ proceeds in small, reviewable steps without fixed delivery dates.
 
 This roadmap replaces the previous M0–M6 implementation sequence. The original
 [`Aura_2_0_Project_Hub_Notion.md`](../Aura_2_0_Project_Hub_Notion.md) remains a historical
-planning reference. [architecture.md](architecture.md) describes the existing
-implementation; planned work below is not implemented behavior.
+planning reference. [architecture.md](architecture.md) describes the implementation;
+the statuses below distinguish implemented work from plans.
 
 Keep the existing repository and useful completed work. Adapt the notebook into
 modules rather than starting an empty project or deleting earlier services. Updating
@@ -25,12 +25,13 @@ experiments, or deployment.
 | M1.1 — ProfessionalProfile | Implemented, including feature and unknown statuses | Preserve schemas, evidence references, and unverified states |
 | M1.2a — PDF ingestion | Implemented, including multi-column refinements | Preserve in-memory parsing, layout information, error handling, and tests |
 | M1.2b — Gemini extraction | Implemented; live model access and accuracy not established | Preserve the service and tests; reuse where helpful |
-| Course notebook / P1.1 | Core graph and tools ported into modules; local runner and offline tests implemented | Preserve the original notebook; live AI validation, Streamlit chat, and tracing remain pending |
+| Course notebook / P1.1 | Core graph/tools ported; offline tests and user-reported live smoke test passed | Preserve the notebook; formal AI evaluation, Streamlit chat, and tracing remain pending |
 
 The application currently previews PDF text and an optional unverified Gemini profile.
-The P1.1 local runner now supports the modular comparison agent and follow-up chat;
-the Streamlit interface does not expose it yet. URL retrieval remains planned. Mocked
-tests validate integration behavior, not live AI quality.
+The local runner supports the modular agent, supplied job URLs/pasted fallbacks, and
+multiple-job follow-up chat; Streamlit does not expose it yet. The user reported a
+successful P1.1 live manual smoke test. Mocked tests validate integration behavior,
+not live AI quality; formal evaluations remain planned.
 
 The notebook's assistant and job-posting tool both depend on OpenAI. Replacing only
 the assistant model would leave an OpenAI dependency inside the tool. Its CV reader
@@ -61,13 +62,16 @@ deferred. A complete, saved, verified profile is not required for the first comp
 
 ## Implementation steps
 
-P1.1 is implemented and verified offline; P1.2–P1.5 remain planned. Complete and review
-each working slice before expanding it. Live model access and quality remain unverified.
+P1.1 and P1.2 are implemented; P1.3–P1.5 remain planned. P1.1 also has a user-reported
+successful live manual smoke test. Complete and review each working slice before
+expanding it; formal model quality evaluation remains pending.
 
 ### P1.1 — Port the notebook's core agent
 
 Status: implemented and verified with synthetic inputs, scripted model responses,
 and the real Gemini adapter over local HTTP mocks. No live model request was made.
+The user subsequently reported that the guided live manual test worked successfully;
+this is a smoke test, not a formal accuracy benchmark.
 The provisional agent model is independently configurable; benchmark selection remains
 open. The notebook's pdfplumber reader is retained with explicit column-order warnings,
 while the existing PyMuPDF service and its layout tests are preserved.
@@ -88,6 +92,17 @@ Completion: a synthetic PDF and one pasted job description produce an evidence-b
 comparison through the modular agent, with a working follow-up question and tests.
 
 ### P1.2 — Add job URLs and multiple-job comparison
+
+Status: implemented, with synthetic website/DNS tests, multi-job graph and Gemini
+adapter tests over local HTTP mocks, and one successful public-page retrieval smoke
+test. No CV or conversation was sent to a job website, and no live Gemini call was
+made during P1.2 implementation. The user subsequently reported a successful live
+P1.2 manual smoke test. A formal multi-job quality evaluation remains pending.
+
+Direct HTTPX retrieval plus Beautiful Soup parsing is the initial backend. It avoids
+another API key, uses single-posting JSON-LD where available, and falls back to clear
+English HTML job regions. Blocked, ambiguous, oversized, or unsupported pages require
+pasted descriptions; no browser automation or access-control bypass is included.
 
 - Adapt the job tool to retrieve supplied public URLs, retaining source URLs and
   relevant posting text alongside extracted requirements.
@@ -170,7 +185,8 @@ additionally requires a successful smoke test of the hosted application.
 
 - Which Gemini model meets tool-use, reasoning, latency, quota, and data-handling needs?
   Benchmark before selecting it; a free tier alone is not sufficient evidence.
-- Which retrieval backend can reliably read representative supplied postings?
+- How well does direct HTTP/HTML retrieval cover the user's representative postings?
+  P1.2 introduces it; broader site coverage and alternative backends remain to evaluate.
 - Which PDF reader preserves useful CV text while keeping the migration understandable?
   Preserve the existing multi-column regression cases.
 - How much structured output helps comparison without making a full profile

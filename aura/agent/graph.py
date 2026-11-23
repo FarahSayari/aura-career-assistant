@@ -1,5 +1,7 @@
 """Explicit assistant/tools loop and isolated, bounded in-memory conversation."""
 
+import json
+from collections.abc import Callable, Sequence
 from typing import Protocol
 from uuid import uuid4
 
@@ -13,7 +15,9 @@ from langsmith import tracing_context
 from aura.agent.model import create_agent_model
 from aura.agent.tools import AgentInputError, create_tools
 from aura.core.config import Settings
-from aura.prompts.career_agent_v1 import SYSTEM_PROMPT
+from aura.prompts.career_agent_v2 import SYSTEM_PROMPT
+from aura.schemas.job import JobInput
+from aura.services.job_retrieval import RetrievedJob
 
 MAX_QUESTION_CHARACTERS = 4_000
 MAX_TOOL_CALLS_PER_TURN = 4
@@ -47,17 +51,25 @@ class CareerAssistant:
     def __init__(
         self,
         cv_pdf: bytes,
-        job_description: str,
+        job_description: str | None = None,
         *,
+        jobs: Sequence[JobInput] | None = None,
         settings: Settings,
         consent_to_send: bool = False,
         model: ToolCallingModel | None = None,
+        job_retriever: Callable[[str], RetrievedJob] | None = None,
     ) -> None:
         if consent_to_send is not True:
             raise CareerAgentError("Confirm external processing before creating the career agent.")
         self._owned_model = None
         try:
-            tools = create_tools(cv_pdf, job_description, max_size_mb=settings.pdf_max_size_mb)
+            tools = create_tools(
+                cv_pdf,
+                job_description,
+                jobs=jobs,
+                max_size_mb=settings.pdf_max_size_mb,
+                job_retriever=job_retriever,
+            )
             if model is None:
                 self._owned_model = create_agent_model(settings)
                 model = self._owned_model
@@ -81,6 +93,18 @@ class CareerAssistant:
         tool_names = {tool.name for tool in tools}
 
         def assistant(state: AgentState) -> dict:
+            previous_jobs = [
+                message
+                for message in state["messages"]
+                if isinstance(message, ToolMessage) and message.name == "job_posting_tool"
+            ]
+            if previous_jobs and not any(
+                job["text"] for job in json.loads(previous_jobs[-1].content)["jobs"]
+            ):
+                raise CareerAgentError(
+                    "No job descriptions could be read. Supply pasted descriptions "
+                    "and start a new conversation."
+                )
             if state["model_calls"] >= self._max_model_calls:
                 raise CareerAgentError(
                     "The agent reached its model-call limit. Reset to try again."
