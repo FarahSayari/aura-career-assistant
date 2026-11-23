@@ -24,11 +24,13 @@ Job Matching, Application Studio, Application Tracking, and Interview Preparatio
 and GitHub Actions remain unimplemented. Local PDF parsing requires no API key. Gemini
 analysis requires a configured key/model, explicit confirmation, and an analysis click.
 
-**P1.1 core agent is implemented and verified offline.** The notebook's explicit
-LangGraph loop and two tools are available through a local runner, using a configurable
-Gemini candidate, one PDF, one pasted job description, and follow-up memory. Live
-Gemini access and reasoning quality are not yet established. Streamlit agent chat,
-URL retrieval, and configured LangSmith tracing remain planned.
+**P1.1 and P1.2 core agent are implemented.** The notebook's explicit LangGraph loop
+and two tools run locally with a configurable Gemini model, one PDF, up to five supplied
+job URLs/pasted descriptions, and follow-up memory. The user reported a successful
+P1.1 live manual smoke test; a formal AI-quality evaluation remains planned. P1.2 has
+offline integration tests, a public-page retrieval smoke test, and a user-reported
+successful live manual smoke test. Streamlit agent chat
+and configured LangSmith tracing remain planned.
 
 ## Technology stack
 
@@ -45,10 +47,12 @@ URL retrieval, and configured LangSmith tracing remain planned.
 | Linting and formatting | Ruff |
 | Package installation | pip in a project-specific `.venv` |
 
-LangGraph is integrated into the P1.1 core. LangSmith is installed as a framework
+LangGraph is integrated into the agent core. LangSmith is installed as a framework
 dependency, but tracing is explicitly disabled until privacy controls are introduced
-in P1.4. Gemini is the initial agent-model candidate; live model evaluation and job
-retrieval remain planned. Qdrant, PostgreSQL, MLflow, and GitHub Actions are deferred.
+in P1.4. Gemini remains the initial agent-model candidate; formal comparative model
+evaluation is planned. Job URLs use direct HTTPX retrieval and Beautiful Soup parsing,
+without an additional search API key. Qdrant, PostgreSQL, MLflow, and GitHub Actions
+are deferred.
 
 ## Repository structure
 
@@ -65,23 +69,26 @@ aura-career-assistant/
 │   │   ├── __main__.py        # Explicit local runner; no Streamlit chat yet
 │   │   ├── graph.py           # Assistant/tools loop, memory, limits, and safe errors
 │   │   ├── model.py           # Configurable Gemini tool-calling candidate
-│   │   └── tools.py           # Notebook reader and pasted-job evidence tools
+│   │   └── tools.py           # Notebook reader and separate job evidence tools
 │   ├── core/
 │   │   ├── __init__.py
 │   │   └── config.py           # Typed settings and optional future credentials
 │   ├── schemas/
 │   │   ├── __init__.py
 │   │   ├── professional_profile.py  # Professional facts, sources, and review states
-│   │   └── cv_extraction.py    # Untrusted model output without trust metadata
+│   │   ├── cv_extraction.py    # Untrusted model output without trust metadata
+│   │   └── job.py              # Supplied URLs, pasted descriptions, and fallback inputs
 │   ├── prompts/
 │   │   ├── __init__.py
 │   │   ├── cv_extraction_v1.py # Versioned factual extraction instructions
-│   │   └── career_agent_v1.py # Grounded comparison and follow-up instructions
+│   │   ├── career_agent_v1.py # Preserved P1.1 prompt baseline
+│   │   └── career_agent_v2.py # Grounded multi-job comparison and follow-up instructions
 │   └── services/
 │       ├── __init__.py
 │       ├── pdf_extraction.py   # In-memory parsing and page/block metadata
 │       ├── gemini_extraction.py # API boundary, structured validation, safe errors
-│       └── profile_conversion.py # Application-owned provenance and unverified states
+│       ├── profile_conversion.py # Application-owned provenance and unverified states
+│       └── job_retrieval.py   # Public HTTP retrieval, HTML parsing, and safe failures
 ├── tests/
 │   ├── conftest.py             # In-memory synthetic PDF factory
 │   ├── test_config.py          # Validation, precedence, and secret redaction
@@ -93,7 +100,9 @@ aura-career-assistant/
 │   ├── test_agent_tools.py    # Notebook PDF reader and parser comparison
 │   ├── test_career_agent.py   # Real graph with scripted model responses
 │   ├── test_agent_model.py    # Adapter configuration and mocked HTTP integration
-│   └── test_agent_runner.py   # Consent and local conversation lifecycle
+│   ├── test_agent_runner.py   # Consent and local conversation lifecycle
+│   ├── test_job_inputs.py     # Job input validation and paired fallback manifests
+│   └── test_job_retrieval.py  # Synthetic websites, redirect/DNS checks, and extraction
 ├── evals/
 │   └── cv_extraction_baseline.json # Synthetic CV texts and expected factual results
 ├── docs/
@@ -344,11 +353,11 @@ quota/rate limits, transport failures, blocked/truncated responses, invalid JSON
 validation failures produce predefined messages without raw sensitive details. Failed
 responses are not accepted as profiles; another click may incur another request.
 
-## Try the P1.1 career agent locally
+## Try the career agent locally
 
-P1.1 ports the notebook's graph into Python modules. The existing Streamlit pages
-are preserved; the agent's Streamlit chat interface is planned for P1.3. This step
-accepts one PDF and one pasted job description, without URL retrieval or OpenAI calls.
+P1.1 ports the notebook's graph into Python modules; P1.2 adds supplied job URLs and
+multiple-job evidence. The existing Streamlit pages are preserved; the agent's chat
+interface is planned for P1.3. The original one-pasted-job command below still works.
 
 Prepare a synthetic selectable-text CV PDF and a UTF-8 text file containing a job
 description under ignored `private/`. Keep these inputs local. Configure your ignored
@@ -364,15 +373,84 @@ Set-Location 'D:\aura 2.0\aura-career-assistant'
 ```
 
 The runner reads only files you explicitly select. The model cannot choose a local
-path or URL. The flag permits sending CV/job text and conversation to Gemini; omit
-it to prevent agent creation. Enter `Compare my CV with this job`, then a follow-up
+path or arbitrary URL. The flag permits sending CV/job text and conversation to Gemini
+and retrieving supplied job URLs; omit it to prevent agent creation. Enter
+`Compare my CV with this job`, then a follow-up
 such as `Which requirements are not demonstrated?`. Each question makes bounded
 model calls. `/reset` clears conversation checkpoints but retains the same evidence;
 `/quit` closes the client and clears checkpoints. Start a new runner for different inputs.
 The terminal shows your requested answers, but the service does not log document text.
 
-The tools return original, **unverified** evidence: numbered CV pages and the pasted
-posting. The graph requires both tool results before accepting an answer; this does
+### Job URLs, multiple jobs, and pasted fallback
+
+For one URL, use `--job-url`. An optional `--job` text file provides fallback for that
+same posting. Successful URL retrieval takes precedence; fallback is explicitly
+labeled as user-pasted evidence when retrieval fails:
+
+```powershell
+.\.venv\Scripts\python.exe -m aura.agent --cv '.\private\synthetic-cv.pdf' --job-url 'https://example.com/job' --job '.\private\synthetic-job.txt' --allow-external-processing
+```
+
+Replace the example URL with a real public posting. For several URLs without paired
+fallbacks, repeat `--job-url` (up to five). For mixed URLs and pasted descriptions,
+save a UTF-8 JSON list under ignored `private/jobs.json`:
+
+```json
+[
+  {
+    "label": "Python opportunity",
+    "url": "https://example.com/python-job",
+    "description": "Paste the complete posting here if a URL fallback is needed."
+  },
+  {
+    "label": "SQL opportunity",
+    "description": "Job title: SQL Analyst. Required: SQL. Preferred: Python."
+  }
+]
+```
+
+The example text is illustrative; replace it with actual postings. `url` and
+`description` are individually optional, but at least one is required per record.
+`label` is your document label, not an extracted title. Do not combine `--jobs` with
+`--job` or `--job-url`. Start the conversation with:
+
+```powershell
+.\.venv\Scripts\python.exe -m aura.agent --cv '.\private\synthetic-cv.pdf' --jobs '.\private\jobs.json' --allow-external-processing
+```
+
+Ask `Assess each job separately, then compare the readable jobs. Cite job IDs and
+CV pages.` Follow up with `Which requirements belong to job_2?` Each input receives
+a stable `job_1`, `job_2`, etc. The job tool returns separate requested/final URLs,
+source text, extraction method, and fallback warnings. It fetches only when called,
+once per URL per conversation; follow-ups and `/reset` reuse this evidence. Restart
+with updated inputs to supply missing text or refresh a posting. If all URLs fail
+without pasted fallback, Aura requests pasted descriptions instead of accepting an
+assessment. Mixed failures remain visible while readable jobs can still be assessed.
+
+The retrieval service uses direct HTTP GET, prefers a single schema.org `JobPosting`
+JSON-LD record, and otherwise tries a `main` or `article` region with recognizable
+English job-description/responsibility and qualification headings. It neither searches
+for other opportunities nor sends the CV to a job website. No retrieval API key is
+required. Source text is unverified and may be incomplete, misleading, or stale.
+
+**Limits:** public HTTP(S) on standard ports only; local/private/reserved destinations,
+mixed public/private DNS results, unsafe redirects, and HTTPS downgrades are blocked.
+Connections use a validated IP while preserving the original Host and TLS hostname.
+Ambient proxies are ignored. Each posting has at most three redirects, a 10-second
+network I/O timeout, and a checked 30-second processing budget; OS DNS resolution is
+not governed by HTTPX's timeout. Responses are capped at 2 MiB, extracted/pasted jobs
+at 20,000 characters each, and combined job evidence at 40,000 characters. Oversized
+postings are rejected rather than silently truncated.
+
+JavaScript-only pages, login/CAPTCHA barriers, compressed responses, expired or ambiguous
+postings, non-HTML content, non-English unstructured layouts, and unusual HTML may
+require pasted text. Retrieval does not execute scripts or bypass access restrictions.
+The parser was smoke-tested on one public Python.org posting; this does not establish
+coverage across job sites. No live multi-job Gemini assessment was performed during
+P1.2 implementation.
+
+The tools return **unverified** evidence: numbered CV pages and separately attributed
+job texts. The graph requires both tool results before accepting an answer; this does
 not prove that every generated claim is supported. The notebook-compatible pdfplumber
 reader can interleave columns. Synthetic comparison tests show that the existing
 PyMuPDF service preserves column order better on the tested layout; that service and
@@ -380,7 +458,7 @@ its regression tests remain unchanged. Review reading order before trusting advi
 
 Defaults are 6 model calls and 4 tool calls per turn, a 60-second timeout per request,
 2,048 output tokens per response, and no automatic retries. Inputs are capped at the
-configured PDF byte limit, 40,000 extracted CV characters, 20,000 job characters, and
+configured PDF byte limit, 40,000 extracted CV characters, 20,000 characters per job, and
 4,000 question characters. Conversation length defaults to 10 successful turns. After
 a failed turn, reset before retrying so an incomplete tool exchange is not resumed.
 Each instance has its own UUID and in-memory checkpointer; do not share an instance
@@ -389,8 +467,9 @@ is implemented. LangSmith tracing stays disabled even if enabled in the shell.
 
 Dependencies use `langchain-google-genai>=4.4.3,<4.5` to remain compatible with the
 existing `google-genai` 2.x service. A future adapter/SDK upgrade requires regression
-validation of both paths. No live Gemini request or factual-quality benchmark was
-performed for this step; local HTTP mocks verify SDK request/response compatibility.
+validation of both paths. Local HTTP mocks verify SDK request/response compatibility.
+The user reported a successful P1.1 live smoke test; a formal factual-quality benchmark
+and live multi-job comparison evaluation remain pending.
 
 ## Tests and code quality
 
@@ -432,13 +511,14 @@ To format changed Python files, run `.\.venv\Scripts\python.exe -m ruff format .
 ## Prototype roadmap
 
 The previous M0–M6 sequence has been replaced by a notebook-based Prototype 1 plan.
-M0, M1.1, M1.2a, and M1.2b remain implemented foundations. P1.1 adds the modular
-notebook agent and local runner; live AI validation and Streamlit chat remain pending.
+M0, M1.1, M1.2a, and M1.2b remain implemented foundations. P1.1 and P1.2 add the
+modular agent, local runner, and multi-job URL/pasted intake. Formal AI evaluation
+and Streamlit agent chat remain pending.
 
 | Step | Outcome | Status |
 | --- | --- | --- |
-| P1.1 — Notebook agent | Modular ReAct graph and tools; synthetic CV plus pasted job and follow-up | Implemented; verified offline only |
-| P1.2 — Job intake | Supplied URLs, pasted fallback, and multiple-job comparison | Planned |
+| P1.1 — Notebook agent | Modular ReAct graph and tools; synthetic CV plus pasted job and follow-up | Implemented; offline tests and user-reported live smoke test |
+| P1.2 — Job intake | Supplied URLs, pasted fallback, and multiple-job comparison | Implemented; offline tests and public retrieval smoke test |
 | P1.3 — Streamlit conversation | Upload, assessment, chat, isolated session state, and reset | Planned |
 | P1.4 — Tracing and quality | LangSmith, offline tests, and a recorded synthetic AI evaluation | Planned |
 | P1.5 — Cloud readiness | Community Cloud setup and hosted smoke validation | Planned |

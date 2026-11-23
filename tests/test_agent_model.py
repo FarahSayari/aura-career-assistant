@@ -12,6 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from aura.agent import CareerAgentError, CareerAssistant
 from aura.agent import model as agent_model
 from aura.core.config import Settings
+from aura.schemas.job import JobInput
 
 
 def test_factory_uses_explicit_candidate_and_disables_retries(monkeypatch):
@@ -43,7 +44,10 @@ def test_ambient_backends_do_not_switch_provider(monkeypatch, switch):
 
 
 @pytest.mark.parametrize("http_status", [200, 429])
-def test_real_adapter_cv_tools_and_followup_over_mock_http(monkeypatch, make_pdf, http_status):
+@pytest.mark.parametrize("multiple_jobs", [False, True])
+def test_real_adapter_cv_tools_and_followup_over_mock_http(
+    monkeypatch, make_pdf, http_status, multiple_jobs
+):
     requests = []
 
     def handler(request):
@@ -68,6 +72,9 @@ def test_real_adapter_cv_tools_and_followup_over_mock_http(monkeypatch, make_pdf
         else:
             assert "Synthetic Python CV" in json.dumps(body)
             assert "Python required" in json.dumps(body)
+            if multiple_jobs:
+                assert "SQL required" in json.dumps(body)
+                assert "job_2" in json.dumps(body)
             parts = [{"text": "Python is supported by CV page 1 and required by the pasted job."}]
         return httpx.Response(
             200,
@@ -90,7 +97,10 @@ def test_real_adapter_cv_tools_and_followup_over_mock_http(monkeypatch, make_pdf
     monkeypatch.setattr(agent_model, "ChatGoogleGenerativeAI", ChatGoogleGenerativeAI)
     agent = CareerAssistant(
         make_pdf(["Synthetic Python CV"]),
-        "Python required",
+        None if multiple_jobs else "Python required",
+        jobs=[JobInput(description="Python required"), JobInput(description="SQL required")]
+        if multiple_jobs
+        else None,
         settings=Settings(
             _env_file=None, gemini_api_key="synthetic-key", agent_model="candidate-model"
         ),

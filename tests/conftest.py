@@ -1,14 +1,17 @@
 """Small synthetic documents shared by service and Streamlit tests."""
 
 import os
+import socket
 from collections.abc import Callable
 
+import httpx
 import langchain_google_genai.chat_models as google_chat
 import pymupdf
 import pytest
 from google import genai
 
 from aura.agent import model as agent_model
+from aura.core.config import Settings
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +23,18 @@ def isolate_agent_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             "GOOGLE_GENAI_USE_ENTERPRISE",
         }:
             monkeypatch.delenv(name)
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+
+
+@pytest.fixture(autouse=True)
+def prevent_live_web_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retrieval tests must provide fake DNS and a mock transport, never public requests."""
+
+    def blocked(*args, **kwargs):
+        pytest.fail("Live HTTP/DNS is forbidden in automated tests; provide a mock.")
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked)
 
 
 @pytest.fixture(autouse=True)
